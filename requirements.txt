@@ -1,5 +1,11 @@
 pypdf
 langchain
-chromadb # Vector storage
+langchain-core
+langchain-community
+langchain-ollama
+langchain-chroma
+langchain-text-splitters
+chromadb
+rank_bm25
+sentence-transformers
 pytest
-boto3
