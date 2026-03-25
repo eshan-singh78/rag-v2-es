@@ -1,9 +1,19 @@
 import tomllib
 from pathlib import Path
 
-_CONFIG_PATH = Path(__file__).parent / "config.toml"
+_ROOT = Path(__file__).parent
+_CONFIG_PATH = _ROOT / "config.toml"
+_EXAMPLE_PATH = _ROOT / "config.toml.example"
 
-with open(_CONFIG_PATH, "rb") as f:
+# Use config.toml if present, fall back to config.toml.example
+_path = _CONFIG_PATH if _CONFIG_PATH.exists() else _EXAMPLE_PATH
+
+if not _path.exists():
+    raise FileNotFoundError(
+        "No config.toml found. Copy config.toml.example to config.toml and update your settings."
+    )
+
+with open(_path, "rb") as f:
     _cfg = tomllib.load(f)
 
 
