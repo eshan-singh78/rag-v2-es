@@ -3,6 +3,7 @@ from rank_bm25 import BM25Okapi
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 from langchain_ollama import OllamaLLM
+from tqdm import tqdm
 
 from db import get_db
 from reranker import rerank
@@ -41,26 +42,32 @@ def _bm25_search(query: str, all_docs: list[Document], top_k: int) -> list[Docum
 def _hybrid_retrieve(query: str) -> list[Document]:
     db = get_db()
 
-    # Dense vector retrieval with MMR
-    with log.timer("vector_retrieval", query=query[:60]):
-        vector_docs = db.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": VECTOR_FETCH_K, "fetch_k": 40, "lambda_mult": 0.7},
-        ).invoke(query)
+    steps = ["Vector retrieval", "BM25 retrieval", "Merging results"]
+    with tqdm(steps, desc="Retrieving", unit="step", leave=False) as pbar:
 
-    # BM25 over full corpus for keyword recall
-    with log.timer("bm25_retrieval"):
-        all_raw = db.similarity_search("", k=1000)  # fetch all docs for BM25
-        bm25_docs = _bm25_search(query, all_raw, top_k=BM25_TOP_K)
+        pbar.set_description("Vector retrieval")
+        with log.timer("vector_retrieval", query=query[:60]):
+            vector_docs = db.as_retriever(
+                search_type="mmr",
+                search_kwargs={"k": VECTOR_FETCH_K, "fetch_k": 40, "lambda_mult": 0.7},
+            ).invoke(query)
+        pbar.update(1)
 
-    # Merge and deduplicate
-    seen: set[str] = set()
-    merged: list[Document] = []
-    for doc in vector_docs + bm25_docs:
-        doc_id = doc.metadata.get("id")
-        if doc_id not in seen:
-            seen.add(doc_id)
-            merged.append(doc)
+        pbar.set_description("BM25 retrieval")
+        with log.timer("bm25_retrieval"):
+            all_raw = db.similarity_search("", k=1000)
+            bm25_docs = _bm25_search(query, all_raw, top_k=BM25_TOP_K)
+        pbar.update(1)
+
+        pbar.set_description("Merging results")
+        seen: set[str] = set()
+        merged: list[Document] = []
+        for doc in vector_docs + bm25_docs:
+            doc_id = doc.metadata.get("id")
+            if doc_id not in seen:
+                seen.add(doc_id)
+                merged.append(doc)
+        pbar.update(1)
 
     log.info("hybrid_candidates", vector=len(vector_docs), bm25=len(bm25_docs), merged=len(merged))
     return merged

@@ -9,4 +9,5 @@ psycopg2-binary
 psycopg
 rank_bm25
 sentence-transformers
+tqdm
 pytest

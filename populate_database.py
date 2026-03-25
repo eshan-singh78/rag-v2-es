@@ -7,6 +7,7 @@ from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_postgres import PGVector
+from tqdm import tqdm
 from db import get_db
 import logger as log
 
@@ -41,7 +42,7 @@ def load_documents() -> list[Document]:
 
 def clean_documents(documents: list[Document]) -> list[Document]:
     cleaned = []
-    for doc in documents:
+    for doc in tqdm(documents, desc="Cleaning pages", unit="page"):
         text = clean_text(doc.page_content)
         if len(text) < 30:
             log.warning("page_skipped", source=doc.metadata.get("source"), page=doc.metadata.get("page"))
@@ -109,16 +110,24 @@ def add_to_pgvector(chunks: list[Document]):
 
     if not new_chunks:
         log.info("no_new_chunks")
+        print("✅ No new documents to add.")
         return
 
     log.info("ingesting", new_chunks=len(new_chunks))
     batches = [new_chunks[i:i + BATCH_SIZE] for i in range(0, len(new_chunks), BATCH_SIZE)]
 
+    progress = tqdm(total=len(new_chunks), desc="Ingesting chunks", unit="chunk")
+
+    def _tracked_ingest(db, batch, batch_num):
+        _ingest_batch(db, batch, batch_num)
+        progress.update(len(batch))
+
     with log.timer("ingest_all"), ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(_ingest_batch, db, batch, i): i for i, batch in enumerate(batches)}
+        futures = {executor.submit(_tracked_ingest, db, batch, i): i for i, batch in enumerate(batches)}
         for future in as_completed(futures):
             future.result()
 
+    progress.close()
     log.info("ingestion_complete", total=len(new_chunks))
 
 
