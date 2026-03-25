@@ -1,20 +1,20 @@
 import argparse
 import os
 import re
-import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-from get_embedding_function import get_embedding_function
-from langchain_chroma import Chroma
+from langchain_postgres import PGVector
+from db import get_db
 import logger as log
 
-CHROMA_PATH = "chroma"
-DATA_PATH = "data"
-BATCH_SIZE = 10
-MAX_RETRIES = 3
+import config
+
+DATA_PATH = config.data_path
+BATCH_SIZE = config.batch_size
+MAX_RETRIES = config.max_retries
 
 _PRINT_META = re.compile(r'\[.*?reprint.*?\]', re.IGNORECASE)
 _MULTI_SPACE = re.compile(r'[ \t]+')
@@ -80,7 +80,7 @@ def calculate_chunk_ids(chunks: list[Document]) -> list[Document]:
     return chunks
 
 
-def _ingest_batch(db: Chroma, batch: list[Document], batch_num: int):
+def _ingest_batch(db: PGVector, batch: list[Document], batch_num: int):
     ids = [c.metadata["id"] for c in batch]
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -93,14 +93,20 @@ def _ingest_batch(db: Chroma, batch: list[Document], batch_num: int):
     log.error("batch_failed", batch=batch_num)
 
 
-def add_to_chroma(chunks: list[Document]):
-    db = Chroma(persist_directory=CHROMA_PATH, embedding_function=get_embedding_function())
+def add_to_pgvector(chunks: list[Document]):
+    db = get_db()
     chunks_with_ids = calculate_chunk_ids(chunks)
 
-    existing_ids = set(db.get(include=[])["ids"])
-    log.info("existing_chunks", count=len(existing_ids))
+    # Fetch existing IDs to avoid re-ingesting
+    try:
+        existing = db.get_by_ids([c.metadata["id"] for c in chunks_with_ids])
+        existing_ids = {doc.id for doc in existing if doc.id}
+    except Exception:
+        existing_ids = set()
 
+    log.info("existing_chunks", count=len(existing_ids))
     new_chunks = [c for c in chunks_with_ids if c.metadata["id"] not in existing_ids]
+
     if not new_chunks:
         log.info("no_new_chunks")
         return
@@ -111,14 +117,14 @@ def add_to_chroma(chunks: list[Document]):
     with log.timer("ingest_all"), ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(_ingest_batch, db, batch, i): i for i, batch in enumerate(batches)}
         for future in as_completed(futures):
-            future.result()  # surface exceptions
+            future.result()
 
     log.info("ingestion_complete", total=len(new_chunks))
 
 
 def clear_database():
-    if os.path.exists(CHROMA_PATH):
-        shutil.rmtree(CHROMA_PATH)
+    db = get_db()
+    db.delete_collection()
     log.info("database_cleared")
 
 
@@ -134,7 +140,7 @@ def main():
         documents = load_documents()
         documents = clean_documents(documents)
         chunks = split_documents(documents)
-        add_to_chroma(chunks)
+        add_to_pgvector(chunks)
 
 
 if __name__ == "__main__":

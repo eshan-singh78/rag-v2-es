@@ -3,9 +3,10 @@ langchain
 langchain-core
 langchain-community
 langchain-ollama
-langchain-chroma
+langchain-postgres
 langchain-text-splitters
-chromadb
+psycopg2-binary
+psycopg
 rank_bm25
 sentence-transformers
 pytest

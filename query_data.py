@@ -1,21 +1,20 @@
 import argparse
 from rank_bm25 import BM25Okapi
-from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 from langchain_ollama import OllamaLLM
 
-from get_embedding_function import get_embedding_function
+from db import get_db
 from reranker import rerank
 import cache
 import logger as log
 
-CHROMA_PATH = "chroma"
-LLM_MODEL = "llama3.2:3b"
-VECTOR_FETCH_K = 20       # candidates from vector search
-BM25_TOP_K = 10           # candidates from BM25
-RERANK_TOP_N = 5          # final chunks after reranking
-RELEVANCE_THRESHOLD = 0.0 # reranker scores can be negative; keep top_n only
+import config
+
+LLM_MODEL = config.llm_model
+VECTOR_FETCH_K = config.vector_fetch_k
+BM25_TOP_K = config.bm25_top_k
+RERANK_TOP_N = config.rerank_top_n
 
 PROMPT_TEMPLATE = """
 You are a helpful assistant. Answer the question using ONLY the context provided below.
@@ -39,8 +38,10 @@ def _bm25_search(query: str, all_docs: list[Document], top_k: int) -> list[Docum
     return [all_docs[i] for i in top_indices]
 
 
-def _hybrid_retrieve(db: Chroma, query: str) -> list[Document]:
-    # Vector retrieval (MMR for diversity)
+def _hybrid_retrieve(query: str) -> list[Document]:
+    db = get_db()
+
+    # Dense vector retrieval with MMR
     with log.timer("vector_retrieval", query=query[:60]):
         vector_docs = db.as_retriever(
             search_type="mmr",
@@ -49,16 +50,12 @@ def _hybrid_retrieve(db: Chroma, query: str) -> list[Document]:
 
     # BM25 over full corpus for keyword recall
     with log.timer("bm25_retrieval"):
-        all_docs_raw = db.get(include=["documents", "metadatas"])
-        all_docs = [
-            Document(page_content=text, metadata=meta)
-            for text, meta in zip(all_docs_raw["documents"], all_docs_raw["metadatas"])
-        ]
-        bm25_docs = _bm25_search(query, all_docs, top_k=BM25_TOP_K)
+        all_raw = db.similarity_search("", k=1000)  # fetch all docs for BM25
+        bm25_docs = _bm25_search(query, all_raw, top_k=BM25_TOP_K)
 
-    # Merge and deduplicate by chunk id
-    seen = set()
-    merged = []
+    # Merge and deduplicate
+    seen: set[str] = set()
+    merged: list[Document] = []
     for doc in vector_docs + bm25_docs:
         doc_id = doc.metadata.get("id")
         if doc_id not in seen:
@@ -70,7 +67,6 @@ def _hybrid_retrieve(db: Chroma, query: str) -> list[Document]:
 
 
 def query_rag(query_text: str) -> str | None:
-    # Cache check
     cached = cache.get(query_text)
     if cached:
         log.info("cache_hit", query=query_text[:60])
@@ -78,16 +74,12 @@ def query_rag(query_text: str) -> str | None:
         print(f"Sources:  {cached['sources']}")
         return cached["response"]
 
-    db = Chroma(persist_directory=CHROMA_PATH, embedding_function=get_embedding_function())
-
-    # Hybrid retrieval
-    candidates = _hybrid_retrieve(db, query_text)
+    candidates = _hybrid_retrieve(query_text)
     if not candidates:
         log.warning("no_candidates", query=query_text[:60])
         print("⚠️  No relevant context found.")
         return None
 
-    # Cross-encoder reranking
     with log.timer("reranking", candidates=len(candidates)):
         ranked = rerank(query_text, candidates, top_n=RERANK_TOP_N)
 
@@ -109,7 +101,6 @@ def query_rag(query_text: str) -> str | None:
     sources = [doc.metadata.get("id") for doc, _ in ranked]
     rerank_scores = [round(float(s), 3) for _, s in ranked]
 
-    # Cache result
     cache.set(query_text, {"response": response_text, "sources": sources})
 
     print(f"\nResponse: {response_text}")

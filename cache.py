@@ -2,9 +2,10 @@ import hashlib
 import json
 import os
 import time
+import config
 
 CACHE_DIR = ".query_cache"
-TTL_SECONDS = 60 * 60  # 1 hour
+TTL_SECONDS = config.cache_ttl
 
 
 def _key(query: str) -> str:
