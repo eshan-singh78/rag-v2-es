@@ -1,0 +1,21 @@
+[database]
+url = "postgresql+psycopg://postgres:password@localhost:5432/ragdb"
+
+[embedding]
+model = "nomic-embed-text"
+
+[llm]
+model = "llama3.2:3b"
+
+[retrieval]
+vector_fetch_k = 20
+bm25_top_k = 10
+rerank_top_n = 5
+
+[ingestion]
+batch_size = 10
+max_retries = 3
+data_path = "data"
+
+[cache]
+ttl_seconds = 3600
