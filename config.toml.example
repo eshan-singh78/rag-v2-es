@@ -1,21 +1,41 @@
 [database]
-url = "postgresql+psycopg://postgres:password@localhost:5432/ragdb"
+# Pinecone local (Docker) gRPC endpoint
+host = "localhost"
+port = 5081
+index_name = "rag-documents"
+dimension = 768          # nomic-embed-text output dim
+metric = "cosine"
 
 [embedding]
-model = "nomic-embed-text"
+model = "nomic-embed-text"   # 768-dim, strong retrieval model
 
 [llm]
 model = "llama3.2:3b"
 
 [retrieval]
-vector_fetch_k = 20
-bm25_top_k = 10
-rerank_top_n = 5
+# How many candidates to pull from vector store before reranking
+vector_fetch_k = 30
+# How many BM25 candidates to keep
+bm25_top_k = 20
+# Final top-N passed to LLM after reranking
+rerank_top_n = 6
+# Minimum cross-encoder score to include a chunk (0–1 scale, tune per corpus)
+rerank_score_threshold = 0.15
+# If the best chunk is below this, refuse to answer entirely
+min_rerank_score = 0.20
 
 [ingestion]
-batch_size = 10
+# Child chunk size (used for embedding/search)
+child_chunk_size = 512
+child_chunk_overlap = 64
+# Parent chunk size (used for context window — wider context)
+parent_chunk_size = 1536
+parent_chunk_overlap = 128
+batch_size = 64
 max_retries = 3
 data_path = "data"
+# Number of parallel ingestion workers
+ingest_workers = 4
 
 [cache]
 ttl_seconds = 3600

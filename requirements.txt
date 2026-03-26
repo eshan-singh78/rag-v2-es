@@ -1,13 +1,24 @@
-pypdf
+# Core RAG
 langchain
 langchain-core
 langchain-community
 langchain-ollama
-langchain-postgres
 langchain-text-splitters
-psycopg2-binary
-psycopg
-rank_bm25
+
+# Vector store — Pinecone local (Docker)
+pinecone[grpc]>=3.0.0
+
+# PDF loading
+pypdf
+
+# Embeddings / reranking
 sentence-transformers
+
+# BM25
+rank_bm25
+
+# Utilities
 tqdm
+
+# Testing
 pytest
