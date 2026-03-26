@@ -24,10 +24,11 @@ def get_optional(section: str, key: str, default=None):
     return _cfg.get(section, {}).get(key, default)
 
 
-# ── Database (Pinecone local) ─────────────────────────────────────────────────
+# ── Database (Qdrant) ─────────────────────────────────────────────────────────
 db_host: str = _cfg["database"]["host"]
-db_port: int = _cfg["database"]["port"]
-db_index_name: str = _cfg["database"]["index_name"]
+db_grpc_port: int = _cfg["database"]["grpc_port"]
+db_rest_port: int = _cfg["database"]["rest_port"]
+db_collection_name: str = _cfg["database"]["collection_name"]
 db_dimension: int = _cfg["database"]["dimension"]
 db_metric: str = _cfg["database"]["metric"]
 

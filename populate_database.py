@@ -1,10 +1,9 @@
 """
 Ingestion pipeline — parallel at every stage:
-  - PDF loading:   ThreadPoolExecutor (I/O bound)
-  - Clean+chunk:   ProcessPoolExecutor (CPU bound, one process per doc)
-  - Embed+upsert:  ThreadPoolExecutor with pre-batched embedding calls
-  - ID dedup:      Parallel fetch batches
-  - BM25 rebuild:  Parallel metadata fetch
+  - PDF loading:   ProcessPoolExecutor (CPU bound, one process per file)
+  - Embed+upsert:  ThreadPoolExecutor with batched embedding calls
+  - ID dedup:      Qdrant scroll to fetch existing point IDs
+  - BM25 rebuild:  Parallel scroll batches
 """
 import argparse
 import hashlib
@@ -13,15 +12,13 @@ import re
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
+from qdrant_client.models import PointStruct
 from tqdm import tqdm
 
 import config
 import logger as log
 import bm25_index
-from db import get_index, delete_index
+from db import get_client, delete_collection, COLLECTION
 from get_embedding_function import embed_texts
 
 DATA_PATH = config.data_path
@@ -29,34 +26,14 @@ BATCH_SIZE = config.batch_size
 MAX_RETRIES = config.max_retries
 INGEST_WORKERS = config.ingest_workers
 
-# ── Text cleaning ─────────────────────────────────────────────────────────────
-_PRINT_META = re.compile(r'\[.*?reprint.*?\]', re.IGNORECASE)
-_CONTROL_CHARS = re.compile(r'[^\x20-\x7E\n£€°]')
-_SOFT_NEWLINE = re.compile(r'(?<![.!?:])\n(?!\n)')
-_MULTI_SPACE = re.compile(r'[ \t]+')
-_MULTI_NEWLINE = re.compile(r'\n{3,}')
 
-
-def clean_text(text: str) -> str:
-    text = _PRINT_META.sub('', text)
-    text = _CONTROL_CHARS.sub(' ', text)
-    text = _SOFT_NEWLINE.sub(' ', text)
-    text = _MULTI_SPACE.sub(' ', text)
-    text = _MULTI_NEWLINE.sub('\n\n', text)
-    return text.strip()
-
-
-# ── Per-file worker (runs in a subprocess) ────────────────────────────────────
+# ── Per-file worker (subprocess) ──────────────────────────────────────────────
 def _process_pdf(pdf_path: str) -> list[dict]:
-    """
-    Load, clean, and chunk a single PDF.
-    Runs in a worker process — no shared state needed.
-    Returns a flat list of chunk records.
-    """
-    import hashlib
+    """Load, clean, and chunk one PDF. Runs in a worker process."""
+    import hashlib, re
     from langchain_community.document_loaders import PyPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
-    import config, re
+    import config
 
     _PRINT_META = re.compile(r'\[.*?reprint.*?\]', re.IGNORECASE)
     _CONTROL_CHARS = re.compile(r'[^\x20-\x7E\n£€°]')
@@ -101,8 +78,15 @@ def _process_pdf(pdf_path: str) -> list[dict]:
                 f"{source}:{page_num}:{p_idx}:{parent_text[:80]}".encode()
             ).hexdigest()[:16]
             for c_idx, child_text in enumerate(child_splitter.split_text(parent_text)):
+                # Qdrant point IDs must be unsigned integers or UUIDs.
+                # We derive a stable uint64 from the sha256 of the child_id string.
+                child_id_str = f"{parent_id}:{c_idx}"
+                point_id = int(
+                    hashlib.sha256(child_id_str.encode()).hexdigest()[:16], 16
+                )
                 records.append({
-                    "child_id": f"{parent_id}:{c_idx}",
+                    "point_id": point_id,
+                    "child_id": child_id_str,
                     "child_text": child_text,
                     "parent_text": parent_text,
                     "source": source,
@@ -114,10 +98,6 @@ def _process_pdf(pdf_path: str) -> list[dict]:
 
 # ── Parallel load + chunk ─────────────────────────────────────────────────────
 def load_and_chunk_parallel(data_path: str) -> list[dict]:
-    """
-    Discover all PDFs, then fan out to a ProcessPoolExecutor —
-    each worker loads, cleans, and chunks one PDF independently.
-    """
     pdf_files = [
         os.path.join(data_path, f)
         for f in os.listdir(data_path)
@@ -129,17 +109,15 @@ def load_and_chunk_parallel(data_path: str) -> list[dict]:
 
     log.info("pdfs_discovered", count=len(pdf_files))
     all_records: list[dict] = []
-
-    # Use min(cpu_count, file_count) workers — no point spawning more than files
     workers = min(os.cpu_count() or 4, len(pdf_files), 16)
+
     with log.timer("load_and_chunk"):
         with ProcessPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(_process_pdf, p): p for p in pdf_files}
             with tqdm(total=len(pdf_files), desc="Loading & chunking PDFs", unit="file") as pbar:
                 for future in as_completed(futures):
                     try:
-                        records = future.result()
-                        all_records.extend(records)
+                        all_records.extend(future.result())
                     except Exception as e:
                         log.error("pdf_worker_error", file=futures[future], error=str(e))
                     pbar.update(1)
@@ -151,47 +129,48 @@ def load_and_chunk_parallel(data_path: str) -> list[dict]:
     return all_records
 
 
-# ── Parallel ID dedup ─────────────────────────────────────────────────────────
-def _fetch_id_batch(index, ids: list[str]) -> set[str]:
-    try:
-        result = index.fetch(ids=ids)
-        return set(result.vectors.keys())
-    except Exception as e:
-        log.warning("fetch_existing_failed", error=str(e))
-        return set()
-
-
-def fetch_existing_ids_parallel(index, all_ids: list[str]) -> set[str]:
-    batches = [all_ids[i:i + 100] for i in range(0, len(all_ids), 100)]
-    existing: set[str] = set()
-    with ThreadPoolExecutor(max_workers=INGEST_WORKERS) as executor:
-        futures = [executor.submit(_fetch_id_batch, index, b) for b in batches]
-        for future in as_completed(futures):
-            existing.update(future.result())
+# ── ID dedup via Qdrant scroll ────────────────────────────────────────────────
+def fetch_existing_ids(client) -> set[int]:
+    """Scroll through all points and collect existing point IDs."""
+    existing: set[int] = set()
+    next_offset = None
+    while True:
+        results, next_offset = client.scroll(
+            collection_name=COLLECTION,
+            limit=1000,
+            offset=next_offset,
+            with_payload=False,
+            with_vectors=False,
+        )
+        for point in results:
+            existing.add(point.id)
+        if next_offset is None:
+            break
     return existing
 
 
 # ── Embed + upsert ────────────────────────────────────────────────────────────
-def _ingest_batch(index, batch: list[dict], batch_num: int):
-    """Embed an entire batch in one call, then upsert. Retries with backoff."""
+def _ingest_batch(client, batch: list[dict], batch_num: int):
     texts = [r["child_text"] for r in batch]
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            vectors = embed_texts(texts)   # single batched embedding call
-            index.upsert(vectors=[
-                {
-                    "id": r["child_id"],
-                    "values": vec,
-                    "metadata": {
+            vectors = embed_texts(texts)
+            points = [
+                PointStruct(
+                    id=r["point_id"],
+                    vector=vec,
+                    payload={
+                        "child_id": r["child_id"],
                         "child_text": r["child_text"],
                         "parent_text": r["parent_text"],
                         "source": r["source"],
                         "page": r["page"],
                         "parent_id": r["parent_id"],
                     },
-                }
+                )
                 for r, vec in zip(batch, vectors)
-            ])
+            ]
+            client.upsert(collection_name=COLLECTION, points=points)
             return
         except Exception as e:
             log.warning("batch_retry", batch=batch_num, attempt=attempt, error=str(e))
@@ -199,15 +178,14 @@ def _ingest_batch(index, batch: list[dict], batch_num: int):
     log.error("batch_failed", batch=batch_num)
 
 
-def add_to_pinecone(records: list[dict]):
-    index = get_index()
+def add_to_qdrant(records: list[dict]):
+    client = get_client()
 
     with log.timer("dedup_check"):
-        all_ids = [r["child_id"] for r in records]
-        existing_ids = fetch_existing_ids_parallel(index, all_ids)
+        existing_ids = fetch_existing_ids(client)
 
     log.info("existing_chunks", count=len(existing_ids))
-    new_records = [r for r in records if r["child_id"] not in existing_ids]
+    new_records = [r for r in records if r["point_id"] not in existing_ids]
 
     if not new_records:
         print("No new documents to add.")
@@ -217,12 +195,12 @@ def add_to_pinecone(records: list[dict]):
     batches = [new_records[i:i + BATCH_SIZE] for i in range(0, len(new_records), BATCH_SIZE)]
     progress = tqdm(total=len(new_records), desc="Embedding & upserting", unit="chunk")
 
-    def _tracked(index, batch, num):
-        _ingest_batch(index, batch, num)
+    def _tracked(client, batch, num):
+        _ingest_batch(client, batch, num)
         progress.update(len(batch))
 
     with log.timer("ingest_all"), ThreadPoolExecutor(max_workers=INGEST_WORKERS) as executor:
-        futures = {executor.submit(_tracked, index, batch, i): i for i, batch in enumerate(batches)}
+        futures = {executor.submit(_tracked, client, batch, i): i for i, batch in enumerate(batches)}
         for future in as_completed(futures):
             try:
                 future.result()
@@ -233,36 +211,24 @@ def add_to_pinecone(records: list[dict]):
     log.info("ingestion_complete", total=len(new_records))
 
 
-# ── BM25 rebuild (parallel metadata fetch) ───────────────────────────────────
-def _fetch_metadata_batch(index, ids: list[str]) -> list[dict]:
-    try:
-        result = index.fetch(ids=ids)
-        return [v.metadata for v in result.vectors.values() if v.metadata]
-    except Exception as e:
-        log.warning("bm25_fetch_batch_failed", error=str(e))
-        return []
-
-
-def rebuild_bm25(index):
+# ── BM25 rebuild ──────────────────────────────────────────────────────────────
+def rebuild_bm25(client):
     log.info("rebuilding_bm25_index")
-    all_ids: list[str] = []
-    try:
-        for id_batch in index.list():
-            all_ids.extend(id_batch)
-    except Exception as e:
-        log.warning("bm25_list_ids_failed", error=str(e))
-        return
-
-    if not all_ids:
-        return
-
-    id_batches = [all_ids[i:i + 100] for i in range(0, len(all_ids), 100)]
     all_metadata: list[dict] = []
-
-    with ThreadPoolExecutor(max_workers=INGEST_WORKERS) as executor:
-        futures = [executor.submit(_fetch_metadata_batch, index, b) for b in id_batches]
-        for future in as_completed(futures):
-            all_metadata.extend(future.result())
+    next_offset = None
+    while True:
+        results, next_offset = client.scroll(
+            collection_name=COLLECTION,
+            limit=1000,
+            offset=next_offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        for point in results:
+            if point.payload:
+                all_metadata.append(point.payload)
+        if next_offset is None:
+            break
 
     log.info("bm25_corpus_fetched", docs=len(all_metadata))
     if all_metadata:
@@ -277,13 +243,13 @@ def main():
     args = parser.parse_args()
 
     if args.reset:
-        delete_index()
+        delete_collection()
 
     with log.timer("pipeline_total"):
         records = load_and_chunk_parallel(DATA_PATH)
-        add_to_pinecone(records)
+        add_to_qdrant(records)
 
-    rebuild_bm25(get_index())
+    rebuild_bm25(get_client())
 
 
 if __name__ == "__main__":

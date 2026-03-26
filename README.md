@@ -8,7 +8,7 @@ Production-grade local RAG pipeline with parent-child chunking, Pinecone local v
 |-----------|-----------|
 | Embeddings | `nomic-embed-text` via Ollama (768-dim, local) |
 | LLM | `llama3.2:3b` via Ollama (local) |
-| Vector DB | Pinecone local (Docker, gRPC) |
+| Vector DB | Qdrant (Docker, gRPC) |
 | Retrieval | Hybrid: Pinecone ANN + persistent BM25 |
 | Reranking | `cross-encoder/ms-marco-MiniLM-L-6-v2` (local) |
 | Chunking | Parent-child (512 child / 1536 parent) |
@@ -34,13 +34,14 @@ bash setup.sh
 
 ### Manual
 
-**1. Start Pinecone local**
+**1. Start Qdrant**
 ```bash
 docker run -d \
-  --name pinecone-local \
+  --name qdrant \
   --restart unless-stopped \
-  -p 5081:5081 \
-  ghcr.io/pinecone-io/pinecone-local:latest
+  -p 6333:6333 -p 6334:6334 \
+  -v $(pwd)/qdrant_storage:/qdrant/storage \
+  qdrant/qdrant:latest
 ```
 
 **2. Pull Ollama models**

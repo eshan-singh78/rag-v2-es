@@ -4,3 +4,5 @@ backup
 chroma
 config.toml
 .query_cache
+qdrant_storage/
+.bm25_cache.pkl

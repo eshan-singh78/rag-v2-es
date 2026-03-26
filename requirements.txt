@@ -5,8 +5,8 @@ langchain-community
 langchain-ollama
 langchain-text-splitters
 
-# Vector store — Pinecone local (Docker)
-pinecone[grpc]>=3.0.0
+# Vector store — Qdrant (Docker)
+qdrant-client[fastembed]>=1.9.0
 
 # PDF loading
 pypdf

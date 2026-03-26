@@ -1,10 +1,10 @@
 [database]
-# Pinecone local (Docker) gRPC endpoint
 host = "localhost"
-port = 5080
-index_name = "rag-documents"
-dimension = 768          # nomic-embed-text output dim
-metric = "cosine"
+grpc_port = 6334          # Qdrant gRPC port
+rest_port = 6333          # Qdrant REST port (used by health check)
+collection_name = "rag-documents"
+dimension = 768           # nomic-embed-text output dim
+metric = "cosine"         # cosine | dot | euclid
 
 [embedding]
 model = "nomic-embed-text"   # 768-dim, strong retrieval model
@@ -13,28 +13,22 @@ model = "nomic-embed-text"   # 768-dim, strong retrieval model
 model = "llama3.2:3b"
 
 [retrieval]
-# How many candidates to pull from vector store before reranking
 vector_fetch_k = 30
-# How many BM25 candidates to keep
 bm25_top_k = 20
-# Final top-N passed to LLM after reranking
 rerank_top_n = 6
-# Minimum cross-encoder score to include a chunk (0–1 scale, tune per corpus)
+# Minimum cross-encoder score to include a chunk (tune per corpus)
 rerank_score_threshold = 0.15
 # If the best chunk is below this, refuse to answer entirely
 min_rerank_score = 0.20
 
 [ingestion]
-# Child chunk size (used for embedding/search)
 child_chunk_size = 512
 child_chunk_overlap = 64
-# Parent chunk size (used for context window — wider context)
 parent_chunk_size = 1536
 parent_chunk_overlap = 128
 batch_size = 64
 max_retries = 3
 data_path = "data"
-# Number of parallel ingestion workers
 ingest_workers = 4
 
 [cache]

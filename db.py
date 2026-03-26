@@ -1,80 +1,66 @@
 """
-Pinecone local (Docker) vector store — singleton connection.
-All modules import get_index() from here.
+Qdrant vector store — singleton client + collection management.
+All modules import get_client() and COLLECTION from here.
 
-Pinecone local quirks vs cloud:
-  - Default port is 5080 (not 5081)
-  - create_index() requires ServerlessSpec even locally
-  - Index must be targeted via describe_index().host, not by name
-  - GRPCClientConfig(secure=False) required — no TLS on local
+Qdrant local runs in Docker on port 6333 (REST) / 6334 (gRPC).
+We use the Python client in gRPC mode for speed.
 """
 import threading
-from pinecone.grpc import PineconeGRPC, GRPCClientConfig
-from pinecone import ServerlessSpec
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams
 
 import config
 import logger as log
 
 _lock = threading.Lock()
-_client: PineconeGRPC | None = None
-_index = None
+_client: QdrantClient | None = None
+
+COLLECTION = config.db_collection_name
+DISTANCE_MAP = {"cosine": Distance.COSINE, "dot": Distance.DOT, "euclid": Distance.EUCLID}
 
 
-def get_client() -> PineconeGRPC:
-    """Singleton gRPC client pointed at the local Docker instance."""
+def get_client() -> QdrantClient:
+    """Singleton Qdrant client (gRPC for speed, falls back to REST)."""
     global _client
     if _client is None:
         with _lock:
             if _client is None:
-                _client = PineconeGRPC(
-                    api_key="pclocal",  # required field, value ignored by local
-                    host=f"http://{config.db_host}:{config.db_port}",
+                _client = QdrantClient(
+                    host=config.db_host,
+                    grpc_port=config.db_grpc_port,
+                    prefer_grpc=True,
                 )
-                log.info("pinecone_client_init",
-                         host=config.db_host, port=config.db_port)
+                log.info("qdrant_client_init",
+                         host=config.db_host, grpc_port=config.db_grpc_port)
+                _ensure_collection(_client)
     return _client
 
 
-def get_index():
-    """
-    Singleton index handle.
-    Creates the index if it doesn't exist, then connects via the resolved
-    index host with TLS disabled (required for Pinecone local).
-    """
-    global _index
-    if _index is None:
-        with _lock:
-            if _index is None:
-                pc = get_client()
-
-                if not pc.has_index(config.db_index_name):
-                    pc.create_index(
-                        name=config.db_index_name,
-                        vector_type="dense",
-                        dimension=config.db_dimension,
-                        metric=config.db_metric,
-                        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-                        deletion_protection="disabled",
-                    )
-                    log.info("pinecone_index_created", name=config.db_index_name)
-
-                # Resolve the per-index host, then open a no-TLS gRPC connection
-                index_host = pc.describe_index(name=config.db_index_name).host
-                _index = pc.Index(
-                    host=index_host,
-                    grpc_config=GRPCClientConfig(secure=False),
-                )
-                log.info("pinecone_index_ready",
-                         name=config.db_index_name, host=index_host)
-    return _index
+def _ensure_collection(client: QdrantClient):
+    """Create the collection if it doesn't exist."""
+    existing = {c.name for c in client.get_collections().collections}
+    if COLLECTION not in existing:
+        distance = DISTANCE_MAP.get(config.db_metric, Distance.COSINE)
+        client.create_collection(
+            collection_name=COLLECTION,
+            vectors_config=VectorParams(
+                size=config.db_dimension,
+                distance=distance,
+            ),
+        )
+        log.info("qdrant_collection_created", name=COLLECTION,
+                 dim=config.db_dimension, metric=config.db_metric)
+    else:
+        log.info("qdrant_collection_ready", name=COLLECTION)
 
 
-def delete_index():
-    """Drop the index (used for --reset). Clears singleton so it's recreated on next call."""
-    global _index
-    pc = get_client()
-    if pc.has_index(config.db_index_name):
-        pc.delete_index(config.db_index_name)
-        log.info("pinecone_index_deleted", name=config.db_index_name)
-    with _lock:
-        _index = None
+def delete_collection():
+    """Drop the collection (used for --reset). Resets the singleton."""
+    global _client
+    client = get_client()
+    existing = {c.name for c in client.get_collections().collections}
+    if COLLECTION in existing:
+        client.delete_collection(COLLECTION)
+        log.info("qdrant_collection_deleted", name=COLLECTION)
+    # Re-create immediately so the rest of the pipeline can proceed
+    _ensure_collection(client)

@@ -21,8 +21,9 @@ if [ "$EUID" -eq 0 ]; then
 fi
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PINECONE_PORT="5080"
-PINECONE_CONTAINER="pinecone-local"
+QDRANT_REST_PORT="6333"
+QDRANT_GRPC_PORT="6334"
+QDRANT_CONTAINER="qdrant"
 OLLAMA_EMBED_MODEL="nomic-embed-text"
 OLLAMA_LLM_MODEL="llama3.2:3b"
 PYTHON_MIN="3.11"
@@ -74,30 +75,32 @@ else
   info "Docker installed. NOTE: log out and back in for group changes to take effect."
 fi
 
-# ── 4. Pinecone local (Docker) ────────────────────────────────────────────────
-info "Starting Pinecone local container..."
-if sudo docker ps -a --format '{{.Names}}' | grep -q "^${PINECONE_CONTAINER}$"; then
-  warn "Container '${PINECONE_CONTAINER}' already exists — starting if stopped."
-  sudo docker start "$PINECONE_CONTAINER" 2>/dev/null || true
+# ── 4. Qdrant (Docker) ───────────────────────────────────────────────────────
+info "Starting Qdrant container..."
+if sudo docker ps -a --format '{{.Names}}' | grep -q "^${QDRANT_CONTAINER}$"; then
+  warn "Container '${QDRANT_CONTAINER}' already exists — starting if stopped."
+  sudo docker start "$QDRANT_CONTAINER" 2>/dev/null || true
 else
   sudo docker run -d \
-    --name "$PINECONE_CONTAINER" \
+    --name "$QDRANT_CONTAINER" \
     --restart unless-stopped \
-    -p "${PINECONE_PORT}":5080 \
-    ghcr.io/pinecone-io/pinecone-local:latest
-  info "Pinecone local container started on port ${PINECONE_PORT}."
+    -p "${QDRANT_REST_PORT}":6333 \
+    -p "${QDRANT_GRPC_PORT}":6334 \
+    -v "$(pwd)/qdrant_storage":/qdrant/storage \
+    qdrant/qdrant:latest
+  info "Qdrant container started (REST :${QDRANT_REST_PORT}, gRPC :${QDRANT_GRPC_PORT})."
 fi
 
-# Wait for Pinecone local to be ready
-info "Waiting for Pinecone local to be ready..."
+# Wait for Qdrant to be ready
+info "Waiting for Qdrant to be ready..."
 for i in $(seq 1 20); do
-  if curl -sf "http://localhost:${PINECONE_PORT}/health" &>/dev/null; then
-    info "Pinecone local is ready."
+  if curl -sf "http://localhost:${QDRANT_REST_PORT}/healthz" &>/dev/null; then
+    info "Qdrant is ready."
     break
   fi
   sleep 2
   if [ "$i" -eq 20 ]; then
-    error "Pinecone local did not become ready in time."
+    error "Qdrant did not become ready in time."
   fi
 done
 

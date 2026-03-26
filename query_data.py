@@ -1,6 +1,6 @@
 """
 RAG query pipeline:
-  1. Hybrid retrieval — Pinecone ANN vector search + BM25 keyword search
+  1. Hybrid retrieval — Qdrant ANN vector search + BM25 keyword search
   2. Parent-document expansion — swap child chunks for their parent context
   3. Cross-encoder reranking
   4. Score-gated answer generation (refuses if context is not relevant enough)
@@ -14,7 +14,7 @@ import config
 import cache
 import logger as log
 import bm25_index
-from db import get_index
+from db import get_client, COLLECTION
 from get_embedding_function import embed_query
 from reranker import rerank
 
@@ -61,11 +61,16 @@ def _validate_query(query: str) -> str:
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 def _vector_search(query: str, k: int) -> list[dict]:
-    """ANN search in Pinecone, returns list of metadata dicts."""
-    index = get_index()
+    """ANN search in Qdrant, returns list of payload dicts."""
+    client = get_client()
     vec = embed_query(query)
-    results = index.query(vector=vec, top_k=k, include_metadata=True)
-    return [match.metadata for match in results.matches if match.metadata]
+    results = client.search(
+        collection_name=COLLECTION,
+        query_vector=vec,
+        limit=k,
+        with_payload=True,
+    )
+    return [hit.payload for hit in results if hit.payload]
 
 
 def _hybrid_retrieve(query: str) -> list[dict]:
