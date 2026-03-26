@@ -6,6 +6,7 @@ Rebuilds automatically if the corpus changes (detected via doc count).
 import threading
 import pickle
 import os
+import re
 from rank_bm25 import BM25Okapi
 
 import logger as log
@@ -15,9 +16,12 @@ _lock = threading.Lock()
 _bm25: BM25Okapi | None = None
 _corpus: list[dict] | None = None   # list of pinecone metadata dicts
 
+_STOPWORDS = {"the", "a", "an", "of", "in", "for", "and", "or", "is", "are", "to", "be"}
+
 
 def _tokenize(text: str) -> list[str]:
-    return text.lower().split()
+    tokens = re.findall(r'\b[a-z]{2,}\b', text.lower())
+    return [t for t in tokens if t not in _STOPWORDS]
 
 
 def build(corpus: list[dict]):

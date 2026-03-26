@@ -21,7 +21,7 @@ from langchain_ollama import OllamaLLM
 from query_data import query_rag
 
 # ── Shared LLM judge ──────────────────────────────────────────────────────────
-_JUDGE_MODEL = "llama3.2:3b"
+_JUDGE_MODEL = "llama3.1:8b"   # deliberately different from the RAG LLM to avoid circular eval
 _judge: Optional[OllamaLLM] = None
 
 
@@ -375,6 +375,8 @@ def test_p20_commission_restriction_reasoning():
 # ─────────────────────────────────────────────────────────────────────────────
 
 _REFUSAL_PHRASES = [
+    "no relevant sebi regulation found",   # new primary refusal
+    "information not found in sebi",       # new LLM-level refusal
     "don't have enough information",
     "cannot answer",
     "not found",

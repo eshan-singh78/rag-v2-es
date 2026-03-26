@@ -10,16 +10,17 @@ metric = "cosine"         # cosine | dot | euclid
 model = "nomic-embed-text"   # 768-dim, strong retrieval model
 
 [llm]
-model = "llama3.2:3b"
+model = "llama3.1:8b"
 
 [retrieval]
 vector_fetch_k = 30
 bm25_top_k = 20
-rerank_top_n = 6
+rerank_top_n = 3
 # Minimum cross-encoder score to include a chunk (tune per corpus)
 rerank_score_threshold = 0.15
 # If the best chunk is below this, refuse to answer entirely
-min_rerank_score = 0.20
+min_rerank_score = 0.5
+skip_reranker = false       # set true to bypass reranker for speed
 
 [ingestion]
 child_chunk_size = 512

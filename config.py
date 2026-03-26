@@ -44,6 +44,7 @@ bm25_top_k: int = _cfg["retrieval"]["bm25_top_k"]
 rerank_top_n: int = _cfg["retrieval"]["rerank_top_n"]
 rerank_score_threshold: float = float(_cfg["retrieval"]["rerank_score_threshold"])
 min_rerank_score: float = float(_cfg["retrieval"]["min_rerank_score"])
+skip_reranker: bool = bool(_cfg["retrieval"].get("skip_reranker", False))
 
 # ── Ingestion ─────────────────────────────────────────────────────────────────
 child_chunk_size: int = _cfg["ingestion"]["child_chunk_size"]

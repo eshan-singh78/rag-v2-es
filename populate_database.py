@@ -41,6 +41,13 @@ def _process_pdf(pdf_path: str) -> list[dict]:
     _MULTI_SPACE = re.compile(r'[ \t]+')
     _MULTI_NEWLINE = re.compile(r'\n{3,}')
 
+    # Noise patterns that indicate non-regulatory boilerplate
+    _NOISE_PATTERNS = re.compile(
+        r'\b(page|schedule|proforma|circular no|inserted vide)\b'
+        r'|^table\b|^note:',
+        re.IGNORECASE,
+    )
+
     def _clean(text: str) -> str:
         text = _PRINT_META.sub('', text)
         text = _CONTROL_CHARS.sub(' ', text)
@@ -48,6 +55,16 @@ def _process_pdf(pdf_path: str) -> list[dict]:
         text = _MULTI_SPACE.sub(' ', text)
         text = _MULTI_NEWLINE.sub('\n\n', text)
         return text.strip()
+
+    def is_useful_chunk(text: str) -> bool:
+        """Return False for chunks that are too short, sparse, or boilerplate."""
+        if len(text) < 150:
+            return False
+        if len(text.split()) < 20:
+            return False
+        if _NOISE_PATTERNS.search(text):
+            return False
+        return True
 
     parent_splitter = RecursiveCharacterTextSplitter(
         separators=["\n\n", "\n", ". ", " ", ""],
@@ -68,7 +85,7 @@ def _process_pdf(pdf_path: str) -> list[dict]:
     records: list[dict] = []
     for page in pages:
         text = _clean(page.page_content)
-        if len(text) < 30:
+        if len(text) < 150:          # raised from 30 — filters headers/footers
             continue
         source = page.metadata.get("source", pdf_path)
         page_num = page.metadata.get("page", 0)
@@ -78,6 +95,8 @@ def _process_pdf(pdf_path: str) -> list[dict]:
                 f"{source}:{page_num}:{p_idx}:{parent_text[:80]}".encode()
             ).hexdigest()[:16]
             for c_idx, child_text in enumerate(child_splitter.split_text(parent_text)):
+                if not is_useful_chunk(child_text):   # quality gate
+                    continue
                 # Qdrant point IDs must be unsigned integers or UUIDs.
                 # We derive a stable uint64 from the sha256 of the child_id string.
                 child_id_str = f"{parent_id}:{c_idx}"
