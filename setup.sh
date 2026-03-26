@@ -21,7 +21,7 @@ if [ "$EUID" -eq 0 ]; then
 fi
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PINECONE_PORT="5081"
+PINECONE_PORT="5080"
 PINECONE_CONTAINER="pinecone-local"
 OLLAMA_EMBED_MODEL="nomic-embed-text"
 OLLAMA_LLM_MODEL="llama3.2:3b"
@@ -83,7 +83,7 @@ else
   sudo docker run -d \
     --name "$PINECONE_CONTAINER" \
     --restart unless-stopped \
-    -p "${PINECONE_PORT}":5081 \
+    -p "${PINECONE_PORT}":5080 \
     ghcr.io/pinecone-io/pinecone-local:latest
   info "Pinecone local container started on port ${PINECONE_PORT}."
 fi

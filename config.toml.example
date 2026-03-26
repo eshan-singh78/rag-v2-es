@@ -1,7 +1,7 @@
 [database]
 # Pinecone local (Docker) gRPC endpoint
 host = "localhost"
-port = 5081
+port = 5080
 index_name = "rag-documents"
 dimension = 768          # nomic-embed-text output dim
 metric = "cosine"
