@@ -64,12 +64,12 @@ def _vector_search(query: str, k: int) -> list[dict]:
     """ANN search in Qdrant, returns list of payload dicts."""
     client = get_client()
     vec = embed_query(query)
-    results = client.search(
+    results = client.query_points(
         collection_name=COLLECTION,
-        query_vector=vec,
+        query=vec,
         limit=k,
         with_payload=True,
-    )
+    ).points
     return [hit.payload for hit in results if hit.payload]
 
 
